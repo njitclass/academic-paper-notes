@@ -2,11 +2,12 @@
 name: academic-paper-notes
 description: "顶刊学术论文深度学习笔记生成器，专为能源工程经济学/管理科学/营销学/MPaCC方向设计。支持工程经济学路线（Nature Energy、Applied Energy：LCOE/系统优化/LCA/博弈/鲁棒优化）与计量实证路线（Energy Economics、TAR、AER等：DID/IV/RDD/面板数据）双模式。当用户说'帮我读这篇文章'、'分析这篇论文'、'生成读书笔记'、'方法论迁移'、'研究切入口'，或上传PDF/粘贴论文内容时使用。"
 license: MIT
-compatibility: Requires pdf skill for PDF input processing. Designed for Claude Code,
-  Codex CLI, Gemini CLI, and other Agent Skills-compatible platforms.
+compatibility: Requires pdf skill for PDF input processing. Compatible with all
+  Agent Skills-compliant platforms (Codex CLI, Gemini CLI, Claude Code, Cursor,
+  Antigravity, and others).
 metadata:
   author: Zhentao Zhu
-  version: "1.2.0"
+  version: "1.3.0"
 ---
 
 # 顶刊学术论文学习笔记
@@ -204,15 +205,41 @@ note-{第一作者姓}-{发表年份}-{标题前5实词，空格→_}.md
 实词定义：跳过冠词(a/an/the)、介词(of/in/for/on等)、连词。
 示例：`note-Zhang-2024-Carbon_trading_scheme_optimal_design.md`
 
+### 文件写入要求（所有平台强制执行）
+
+生成笔记内容后，**必须使用平台原生文件写入工具将完整7模块内容写入磁盘**，
+不得仅向对话流输出。
+
+各平台写入方式：
+- **Claude Code**：使用 `Write` 工具写入文件
+- **Codex CLI / Gemini CLI**：使用 Python `open().write()` 工具调用，
+  或支持文件操作的原生工具
+- **其他平台**：使用该平台提供的文件写入 API / 工具调用
+
+写入后必须：
+1. 输出文件**绝对路径**供用户验证
+2. 确认文件存在（如平台支持，调用文件读取工具验证）
+
+> ⚠️ **严禁将完整7模块笔记内容输出到对话流。禁止使用 bash heredoc 模板
+> （单引号定界符禁止变量展开，无法注入 Agent 生成的内容）。**
+
+---
+
 ### 单篇精读模式 / 批量模式（输出格式统一）
 
+> ⚠️ **强制要求，适用于单篇与批量所有模式：**
+> 1. 完整7模块笔记内容**必须写入 `.md` 文件**，不得输出到对话流
+> 2. 对话流中**仅允许**出现：文件绝对路径 + 下方摘要格式块
+> 3. 单篇模式与批量模式执行相同的写文件逻辑，不因"只有一篇"而豁免
+> 4. 写入完成后**必须输出绝对路径**，供用户验证文件是否存在
+
 两种模式均采用相同输出策略：
-- 笔记**写入 `.md` 文件**（完整7模块内容）
-- 对话中只输出：**文件链接 + 约400字结构化摘要**，格式：
+- 笔记**写入 `.md` 文件**（完整7模块内容，使用上方"文件写入要求"中的方式执行）
+- 对话中**只允许**输出：**文件绝对路径 + 约400字结构化摘要**，格式：
 
 ```
 ✅ [X/N] note-Zhang-2024-... 已生成（单篇时省略进度标记）
-[查看完整笔记](computer://.../.md)
+📁 文件路径：[绝对路径，如 /Users/xxx/papers/note-Zhang-2024-xxx.md]
 └─ 核心问题：...
 └─ 方法：[模式A/B/AB] | [识别策略/核心模型，1句]
 └─ 主要结论：[量化结论，2-3句]
@@ -227,7 +254,7 @@ note-{第一作者姓}-{发表年份}-{标题前5实词，空格→_}.md
 
 ## 步骤4：批量循环逻辑
 
-### Cowork 环境
+### 对话模式（Cowork / 不支持文件系统访问的平台）
 
 用户提交N篇时，**立即计算并告知**：
 ```
@@ -237,7 +264,7 @@ note-{第一作者姓}-{发表年份}-{标题前5实词，空格→_}.md
 
 每轮处理1篇，完成后提示下一轮所需操作。循环由用户手动触发。
 
-### Claude Code 环境
+### Agent 自动执行模式（支持文件系统与工具调用的平台）
 
 用户指定项目文件夹时，执行以下逻辑：
 
@@ -245,16 +272,29 @@ note-{第一作者姓}-{发表年份}-{标题前5实词，空格→_}.md
 # 1. 扫描所有PDF，计算总数
 PDF_FILES=($(ls *.pdf 2>/dev/null))
 TOTAL=${#PDF_FILES[@]}
-echo "📋 共发现${TOTAL}篇PDF，逐篇处理"
+
+if [ $TOTAL -eq 0 ]; then
+    echo "❌ 当前目录未发现PDF文件，请 cd 到正确目录后重试"
+    exit 1
+fi
+
+echo "📋 共发现${TOTAL}篇PDF，开始逐篇处理"
+echo "📁 输出目录：$(pwd)"
 
 # 2. 逐篇循环（每次1篇）
 for ((i=0; i<TOTAL; i++)); do
-    echo "--- 第$((i+1))/${TOTAL}轮 ---"
-    # [调用pdf skill提取 → 执行步骤1-3 → 写入文件]
-    echo "✅ [$((i+1))/${TOTAL}] note-... 已生成"
+    PDF="${PDF_FILES[$i]}"
+    echo "--- 第$((i+1))/${TOTAL}轮：${PDF} ---"
+
+    # [调用pdf skill提取全文 → 执行步骤1-3]
+    # [FILENAME 由步骤3命名规则生成：note-{作者姓}-{年份}-{标题前5实词}.md]
+    # [使用步骤3"文件写入要求"中的平台原生写入工具写入文件]
+
+    echo "✅ [$((i+1))/${TOTAL}] ${FILENAME} 已写入 $(pwd)"
 done
 
 echo "🎉 全部完成：共${TOTAL}篇，生成${TOTAL}个.md文件"
+echo "📁 文件位置：$(pwd)"
 ```
 
 全部完成后，在对话末尾追加**跨文比较摘要**（方法论异同 + 可组合的研究方向），不单独生成文件。
